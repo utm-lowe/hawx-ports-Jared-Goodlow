@@ -157,10 +157,36 @@ port_init(void)
     // non-kernal ports. Make sure that all ports are empty.
 
     // YOUR CODE HERE
+
+    // Initialize every port 
+    for (int i = 0; i < NPORT; i++) {
+        // Empty circular buffer
+        ports[i].head  = 0;
+        ports[i].tail  = 0;
+        ports[i].count = 0;
+
+        // Initializes ports as free and owned by kernel
+        ports[i].free  = 1;
+        ports[i].owner = 0;                 // kernel / nobody
+        ports[i].type  = PORT_TYPE_FREE;
+    }
+
+    // Reserve predefined ports for the kernel
+    ports[PORT_CONSOLEIN].free  = 0;
+    ports[PORT_CONSOLEIN].owner = 0;
+    ports[PORT_CONSOLEIN].type  = PORT_TYPE_KERNEL;
+
+    ports[PORT_CONSOLEOUT].free  = 0;
+    ports[PORT_CONSOLEOUT].owner = 0;
+    ports[PORT_CONSOLEOUT].type  = PORT_TYPE_KERNEL;
+
+    ports[PORT_DISKCMD].free  = 0;
+    ports[PORT_DISKCMD].owner = 0;
+    ports[PORT_DISKCMD].type  = PORT_TYPE_KERNEL;
 }
 
 
-// Close the port.
+// Close the port
 void 
 port_close(int port)
 {
@@ -168,6 +194,28 @@ port_close(int port)
     // if it is open, we empty its contents and mark it as free.
 
     // YOUR CODE HERE
+
+    // Invalid port number
+    if (port < 0 || port >= NPORT)
+        return;
+
+    // If already free then nothing happens
+    if (ports[port].free)
+        return;
+
+    // Kernel ports cannot be closed
+    if (ports[port].type == PORT_TYPE_KERNEL)
+        return;
+
+    // Remove buffer contents
+    ports[port].head  = 0;
+    ports[port].tail  = 0;
+    ports[port].count = 0;
+
+    // Mark port as free and let the kernel own it
+    ports[port].free  = 1;
+    ports[port].owner = 0;
+    ports[port].type  = PORT_TYPE_FREE;
 }
 
 
@@ -185,8 +233,54 @@ port_acquire(int port, procid_t proc_id)
     // If this operation fails, return -1.
 
     // YOUR CODE HERE
-    
-    return -1;
+
+    // If caller wants any available port
+    if (port < 0) {
+        for (int i = 0; i < NPORT; i++) {
+
+            // Skip kernel-reserved ports
+            if (ports[i].type == PORT_TYPE_KERNEL)
+                continue;
+
+            // First free non-kernel port is used
+            if (ports[i].free) {
+                ports[i].free  = 0;              // mark as in use
+                ports[i].owner = (int)proc_id;   // record owner
+
+                // Reset buffer so the new owner starts clean
+                ports[i].head  = 0;
+                ports[i].tail  = 0;
+                ports[i].count = 0;
+
+                return i;
+            }
+        }
+        return -1;  // no free ports available
+    }
+
+    // Caller requested a specific port
+    if (port >= NPORT)
+        return -1;
+
+    // Kernel ports cannot be acquired by processes
+    if (ports[port].type == PORT_TYPE_KERNEL)
+        return -1;
+
+    // Port must be free
+    if (!ports[port].free)
+        return -1;
+
+    // Allocate the requested port
+    ports[port].free  = 0;
+    ports[port].owner = (int)proc_id;
+
+    // Start with empty buffer
+    ports[port].head  = 0;
+    ports[port].tail  = 0;
+    ports[port].count = 0;
+
+    // Return allocated port number
+    return port;
 }
 
 
@@ -201,8 +295,40 @@ port_write(int port, char *buf, int n)
     // write it.
 
     // YOUR CODE HERE
-    return -1;
+
+    // Invalid port number or buffer
+    if (port < 0 || port >= NPORT || buf == 0)
+        return -1;
+
+    // Nothing happens with zero or negative bytes
+    if (n <= 0)
+        return 0;
+
+    // Port must be open
+    if (ports[port].free)
+        return -1;
+
+    // Bytes written
+    int written = 0;
+
+    // Write until n bytes or the buffer becomes full
+    while (written < n && ports[port].count < PORT_BUF_SIZE) {
+
+        // Copy one byte into the circular buffer
+        ports[port].buffer[ports[port].head] = buf[written];
+
+        // Advances the head with buffer wraparound
+        ports[port].head = (ports[port].head + 1) % PORT_BUF_SIZE;
+
+        // Track how many bytes stored
+        ports[port].count++;
+        written++;
+    }
+
+    // Return how many bytes were actually written
+    return written;
 }
+
 
 
 // Read up to n characters from a port into buf. Return the number of bytes read.
@@ -217,5 +343,35 @@ port_read(int port, char *buf, int n)
 
     // YOUR CODE HERE
 
-    return -1;
+    // Invalid port number or buffer
+    if (port < 0 || port >= NPORT || buf == 0)
+        return -1;
+
+    // Nothing can be done with zero or negative bytes
+    if (n <= 0)
+        return 0;
+
+    // Port must be open
+    if (ports[port].free)
+        return -1;
+
+    // Bytes read
+    int read = 0;
+
+    // Read until n bytes or the buffer is empty
+    while (read < n && ports[port].count > 0) {
+
+        // Copy one byte out of the circular buffer
+        buf[read] = ports[port].buffer[ports[port].tail];
+
+        // Advances the tail with buffer wraparound 
+        ports[port].tail = (ports[port].tail + 1) % PORT_BUF_SIZE;
+
+        // Takes a byte out of the buffer
+        ports[port].count--;
+        read++;
+    }
+
+    // Return the number of bytes read
+    return read;
 }
